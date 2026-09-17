@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Cartas Notariales Digitales — PoC</title>
+<style>
+  body { font-family: system-ui, Arial, sans-serif; max-width: 820px; margin: 30px auto; padding: 0 16px; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tab-btn { padding: 8px 16px; border: 1px solid #ccc; background: #f2f2f2; cursor: pointer; border-radius: 6px; }
+  .tab-btn.active { background: #1a1a1a; color: white; }
+  .panel { display: none; border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
+  .panel.active { display: block; }
+  textarea, input[type=text] { width: 100%; box-sizing: border-box; padding: 8px; margin: 6px 0; }
+  textarea { min-height: 100px; }
+  label { font-weight: 600; font-size: 0.9rem; display: block; margin-top: 10px; }
+  button.action { margin-top: 14px; padding: 10px 18px; background: #1a1a1a; color: white; border: none; border-radius: 6px; cursor: pointer; }
+  pre { background: #f7f7f7; border: 1px solid #eee; padding: 10px; overflow-x: auto; font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }
+  .badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-weight: bold; }
+  .ok { background: #d4f7dc; color: #0a6b28; }
+  .bad { background: #fcdada; color: #9b1c1c; }
+  .row { display: flex; gap: 20px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 260px; }
+  .download-link { display: inline-block; margin-top: 8px; }
+  small.hint { color: #666; }
+</style>
+</head>
+<body>
+<h1>CloudSign</h1>
+<p><small class="hint">Firma digital real (RSA-2048 + SHA-256)</small></p>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="showTab('emitir')">1. Emitir firma</button>
+  <button class="tab-btn" onclick="showTab('verificar')">2. Verificar firma</button>
+</div>
+
+<!-- EMITIR -->
+<div id="panel-emitir" class="panel active">
+  <label>Nombre del emisor</label>
+  <input type="text" id="firmante" placeholder="Juan Peréz">
+
+  <label>Contenido para firmar (texto)</label>
+  <textarea id="texto" placeholder="Escribe aquí el contenido a firmar..."></textarea>
+
+  <label>O sube un archivo (PDF / TXT)</label>
+  <input type="file" id="archivo">
+
+  <button class="action" onclick="emitir()">Firmar y sellar documento</button>
+
+  <div id="emitir-resultado"></div>
+</div>
+
+<!-- VERIFICAR -->
+<div id="panel-verificar" class="panel">
+  <label>Documento a verificar</label>
+  <input type="file" id="doc_verificar">
+
+  <label>Constancia (archivo .json)</label>
+  <input type="file" id="constancia_archivo">
+
+  <label>O pega el JSON de la constancia</label>
+  <textarea id="constancia_texto" placeholder='{"version": "1.0", ...}'></textarea>
+
+  <button class="action" onclick="verificar()">Verificar firma</button>
+
+  <div id="verificar-resultado"></div>
+</div>
+
+<script>
+function showTab(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+
+async function emitir() {
+  const fd = new FormData();
+  fd.append('firmante', document.getElementById('firmante').value);
+  const archivo = document.getElementById('archivo').files[0];
+  if (archivo) {
+    fd.append('archivo', archivo);
+  } else {
+    fd.append('texto', document.getElementById('texto').value);
+  }
+
+  const res = await fetch('/emitir', { method: 'POST', body: fd });
+  const data = await res.json();
+  const div = document.getElementById('emitir-resultado');
+
+  if (data.error) {
+    div.innerHTML = `<p class="badge bad">Error</p><p>${data.error}</p>`;
+    return;
+  }
+
+  const r = data.reporte;
+  const constanciaStr = JSON.stringify(data.constancia, null, 2);
+  const blob = new Blob([constanciaStr], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+
+  const docBlob = new Blob([Uint8Array.from(atob(data.documento_base64), c => c.charCodeAt(0))]);
+  const docUrl = URL.createObjectURL(docBlob);
+
+  div.innerHTML = `
+    <hr>
+    <span class="badge ok">EMITIDA</span>
+    <h3>Reporte de Evidencia de Transacción</h3>
+    <div class="row">
+      <div>
+        <p><b>Emisor / Firmante:</b> ${r.emisor_firmante}</p>
+        <p><b>Algoritmo:</b> ${r.algoritmo}</p>
+        <p><b>Timestamp / Fecha cierta (UTC):</b> ${r.timestamp_fecha_cierta_utc}</p>
+      </div>
+      <div>
+        <p><b>Estado certificado emisor:</b> ${r.estado_certificado_emisor}</p>
+        <p><b>Estado certificado TSA:</b> ${r.estado_certificado_tsa}</p>
+      </div>
+    </div>
+    <p><b>Hash SHA-256 del documento:</b></p>
+    <pre>${r.hash_documento_sha256}</pre>
+    <a class="download-link" download="${data.nombre_archivo_original}" href="${docUrl}">⬇️ Descargar documento original</a><br>
+    <a class="download-link" download="constancia.json" href="${url}">⬇️ Descargar constancia (JSON)</a>
+    <details style="margin-top:10px"><summary>Ver constancia completa</summary><pre>${constanciaStr}</pre></details>
+  `;
+}
+
+async function verificar() {
+  const fd = new FormData();
+  const doc = document.getElementById('doc_verificar').files[0];
+  const constanciaArchivo = document.getElementById('constancia_archivo').files[0];
+  const constanciaTexto = document.getElementById('constancia_texto').value;
+
+  if (!doc) { alert('Sube el documento a verificar'); return; }
+  fd.append('documento', doc);
+  if (constanciaArchivo) {
+    fd.append('constancia', constanciaArchivo);
+  } else {
+    fd.append('constancia_json', constanciaTexto);
+  }
+
+  const res = await fetch('/verificar', { method: 'POST', body: fd });
+  const data = await res.json();
+  const div = document.getElementById('verificar-resultado');
+
+  if (data.error) {
+    div.innerHTML = `<p class="badge bad">Error</p><p>${data.error}</p>`;
+    return;
+  }
+
+  const r = data.reporte;
+  const badgeClass = r.resultado === 'APROBADA' ? 'ok' : 'bad';
+  const validoTxt = (b) => b ? '✅ Válido' : '❌ Inválido';
+
+  div.innerHTML = `
+    <hr>
+    <span class="badge ${badgeClass}">${r.resultado}</span>
+    <p>${r.mensaje}</p>
+    <h3>Reporte de Evidencia de Transacción</h3>
+    <div class="row">
+      <div>
+        <p><b>Emisor / Firmante:</b> ${r.emisor_firmante}</p>
+        <p><b>Algoritmo:</b> ${r.algoritmo}</p>
+        <p><b>Timestamp / Fecha cierta (UTC):</b> ${r.timestamp_fecha_cierta_utc}</p>
+        <p><b>Estado certificado emisor:</b> ${r.estado_certificado_emisor}</p>
+        <p><b>Estado certificado TSA:</b> ${r.estado_certificado_tsa}</p>
+      </div>
+      <div>
+        <p><b>Hashes coinciden (H1==H2):</b> ${validoTxt(r.hashes_coinciden)}</p>
+        <p><b>Firma del emisor:</b> ${validoTxt(r.firma_emisor_valida)}</p>
+        <p><b>Sello de tiempo (firma TSA):</b> ${validoTxt(r.sello_tiempo_valido)}</p>
+        <p><b>Sello vinculado al documento:</b> ${validoTxt(r.sello_tiempo_vinculado)}</p>
+      </div>
+    </div>
+    <p><b>H1 (recomputado del documento subido):</b></p>
+    <pre>${r.hash_recomputado_h1}</pre>
+    <p><b>H2 (declarado en la constancia):</b></p>
+    <pre>${r.hash_documento_original_h2}</pre>
+  `;
+}
+</script>
+</body>
+</html>
